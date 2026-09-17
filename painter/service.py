@@ -342,3 +342,33 @@ async def stream():
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+@app.get("/nft/{cid}")
+def nft_metadata(cid: int):
+    """ERC-721 metadata for a claimed canvas. baseURI on the contract points here, so a
+    marketplace reads the frozen picture and the provenance of how it was drawn."""
+    cid = int(cid)
+    mpath = DATA / f"canvas-{cid:06d}.json"
+    if not mpath.exists():
+        return JSONResponse(dict(ok=False, error="canvas not frozen yet"), status_code=404)
+    m = json.loads(mpath.read_text())
+    cv = m.get("canvas", {})
+    base = (os.environ.get("FLYO_PUBLIC_URL") or "").rstrip("/")
+    return JSONResponse({
+        "name": f"Flyonardo da Vinci #{cid}",
+        "description": (
+            "A drawing made by a fruit fly brain. The real male CNS connectome (165,122 "
+            "neurons) ran off-chain while live Robinhood Chain activity drove its sensory "
+            "neurons; its descending population steered the pen, and the block hashes chose "
+            "the colours. Nobody steered it. Frozen at the moment it was claimed."),
+        "image": f"{base}/canvas/{cid}.png",
+        "external_url": "https://flybrain.online/flyonardo",
+        "attributes": [
+            {"trait_type": "strokes", "value": cv.get("n")},
+            {"trait_type": "line length px", "value": int(cv.get("distance") or 0)},
+            {"trait_type": "brush changes", "value": cv.get("brush_changes")},
+            {"trait_type": "stroke root", "value": m.get("strokeRoot")},
+            {"trait_type": "claimed by", "value": m.get("owner")},
+            {"trait_type": "canvas", "value": f"{cv.get('w')}x{cv.get('h')}"},
+        ],
+    })
