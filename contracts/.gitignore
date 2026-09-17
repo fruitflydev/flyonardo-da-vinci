@@ -1,0 +1,6 @@
+node_modules/
+artifacts/
+cache/
+# local-chain deployments are throwaway; commit deployments/4663.json only
+deployments/31337.json
+deployments/1337.json

@@ -1,0 +1,22 @@
+{
+  "chainId": 4663,
+  "address": "0x04c154478D5ad851E6083661462B3001C30D6D3E",
+  "txHash": "0x7a5f24eebc449b39aa83eb2f15747ad63451f70d6b14372e69c654d7b6664670",
+  "blockNumber": 65567840,
+  "gasUsed": "1973305",
+  "deployer": "0x6ce4085EfB52a6eBDb7d6989beb8860847f4b42A",
+  "name": "Flyonardo da Vinci",
+  "symbol": "FLYONARDO",
+  "owner": "0x6ce4085EfB52a6eBDb7d6989beb8860847f4b42A",
+  "operator": "0xE2B1c706E3dAEE16C6aF7a3CB7E709254A123748",
+  "token": "0x4Eb990547BCe4a982432CA88Cf5fae7EED1A2d35",
+  "price": "100000000000000000000000",
+  "currentCanvas": 1,
+  "priceTokens": "100000.0",
+  "compiler": {
+    "solc": "0.8.24",
+    "optimizerRuns": 200,
+    "evmVersion": "shanghai"
+  },
+  "deployedAt": "2026-09-17T18:05:16.635Z"
+}

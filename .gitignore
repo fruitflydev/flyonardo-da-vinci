@@ -1,0 +1,15 @@
+# secrets
+.env
+.env.*
+!.env.example
+# local and build output
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+artifacts/
+cache/
+data/
+painter/data/
+*.log
+.vercel/
