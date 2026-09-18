@@ -211,6 +211,13 @@ class Painter:
 
     # ---- views --------------------------------------------------------------------
 
+    def _claimed(self, r):
+        """A claimed canvas as the site wants it: its own snapshot and its token id."""
+        base = (os.environ.get("FLYO_PUBLIC_URL") or "").rstrip("/")
+        cid = int(r.get("canvasId") or 0)
+        return dict(r, tokenId=cid, image=f"{base}/canvas/{cid}.png" if base else None,
+                    metadata=f"{base}/nft/{cid}" if base else None)
+
     def state(self):
         f = self.frame or {}
         return dict(
@@ -221,13 +228,14 @@ class Painter:
                      heading=round(self.canvas.heading, 1)),
             motor=getattr(self, "detail", None),
             colour=self.canvas.colour, palette=list(C.PALETTE), paper=C.PAPER,
+            strokeWidth=C.STROKE_WIDTH,
             brushChanges=self.canvas.brush_changes, brushPx=self.canvas.brush_px,
             inkSinceBrush=round(self.canvas.ink, 1), lineLength=round(self.canvas.distance, 1),
             strokeRoot="0x" + self.canvas.root.hex(),
             block=f.get("toBlock", 0), blocks=f.get("blocks", 0), warm=f.get("warm", True),
             rpcOk=self.rpc_ok, rates=self.rate_hz, raw=f.get("raw", {}),
             groups=self.group_sizes,
-            token=rh.FLYBRAIN, recent=self.recent[-12:],
+            token=rh.FLYBRAIN, recent=[self._claimed(r) for r in self.recent[-12:]],
             **self.chain.state(),
         )
 
@@ -334,7 +342,9 @@ async def stream():
                 try:
                     event, data = await asyncio.wait_for(q.get(), timeout=20.0)
                 except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+                    # a named event, not a bare comment: the page can treat silence as
+                    # trouble without keeping its own watchdog
+                    yield f'event: ping\ndata: {{"at": {int(time.time())}}}\n\n'
                     continue
                 yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
         finally:

@@ -139,7 +139,11 @@ class OnChain:
                 + _word(input_hash) + _word(strokes))
         nonce = int(self.rpc.call("eth_getTransactionCount", [self.operator, "pending"]), 16)
         gas_price = max(int(self.rpc.call("eth_gasPrice", []), 16) * 2, 100_000_000)
-        tx = dict(nonce=nonce, gasPrice=gas_price, gas=120_000, to=self.address, value=0,
+        # eth_call is happy with a lowercase address; the signer is not - it refuses a `to`
+        # that is not checksummed, which is what stopped every commit on the first night.
+        from eth_utils import to_checksum_address
+        tx = dict(nonce=nonce, gasPrice=gas_price, gas=120_000,
+                  to=to_checksum_address(self.address), value=0,
                   data=data, chainId=rh.CHAIN_ID)
         raw = Account.sign_transaction(tx, self._key).raw_transaction
         h = self.rpc.call("eth_sendRawTransaction", ["0x" + raw.hex().removeprefix("0x")])
@@ -156,5 +160,6 @@ class OnChain:
                     commitEverySeconds=self.commit_s,
                     operatorBalance=None if self.balance is None else round(self.balance, 6),
                     price=None if self.price is None else str(self.price),
+                    priceRaw=None if self.price is None else str(self.price),
                     priceDisplay=None if self.price is None else round(self.price / 1e18, 4),
                     lastCommit=self.last_commit)

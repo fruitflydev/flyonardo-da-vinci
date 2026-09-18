@@ -36,6 +36,7 @@ PALETTE = ("#d92b32", "#f0c020", "#2f6fe0", "#1f9e57")   # red, yellow, blue, gr
 W, H = 1600, 1000
 BRUSH_PX = 120.0          # ink a colour must lay down before the chain may change it
 EDGE = 6                  # keep the pen this far inside the paper
+STROKE_WIDTH = 2          # px; the site draws live strokes at the same weight
 
 STROKE = struct.Struct("<HHHHB")     # x0, y0, x1, y1, colour
 ZERO_ROOT = bytes(32)
@@ -189,7 +190,7 @@ def root_of(path):
     return root
 
 
-def render(strokes, w=W, h=H, scale=1.0, width=2):
+def render(strokes, w=W, h=H, scale=1.0, width=STROKE_WIDTH):
     """PNG of a stroke list. Pillow only; the site draws the live line itself."""
     from PIL import Image, ImageDraw
     img = Image.new("RGB", (int(w * scale), int(h * scale)), PAPER)

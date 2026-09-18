@@ -10,13 +10,14 @@
   "owner": "0x6ce4085EfB52a6eBDb7d6989beb8860847f4b42A",
   "operator": "0xE2B1c706E3dAEE16C6aF7a3CB7E709254A123748",
   "token": "0x4Eb990547BCe4a982432CA88Cf5fae7EED1A2d35",
-  "price": "100000000000000000000000",
+  "price": "10000000000000000000000",
   "currentCanvas": 1,
-  "priceTokens": "100000.0",
+  "priceTokens": "10000.0",
   "compiler": {
     "solc": "0.8.24",
     "optimizerRuns": 200,
     "evmVersion": "shanghai"
   },
-  "deployedAt": "2026-09-17T18:05:16.635Z"
+  "deployedAt": "2026-09-17T18:05:16.635Z",
+  "setPriceTx": "0x16d7cadfb7cdeed7e5817768846c33bab183f19b2894500741f93c645dc69175"
 }
