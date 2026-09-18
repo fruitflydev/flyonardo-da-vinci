@@ -118,10 +118,18 @@ class OnChain:
                     claimBlock=int(w[6], 16), claimTime=int(w[7], 16),
                     claimer="0x" + w[8][-40:], burned=int(w[9], 16) / 1e18)
 
-    def claim_tx(self, canvas_id, from_block):
-        """The claim's transaction hash, for a link on the site. Best effort."""
+    def claim_tx(self, canvas_id, claim_time):
+        """The claim's transaction hash, for a link on the site. Best effort.
+
+        The contract's claimBlock is useless for this: on a Nitro chain `block.number` is
+        the Ethereum L1 block, not this chain's. So the L2 block is estimated from the
+        claim timestamp at the measured ~0.1 s a block and a window around it is searched.
+        """
         try:
-            logs = rh._get_logs(self.rpc, max(0, int(from_block) - 5000), int(from_block) + 5,
+            head = self.rpc.call("eth_getBlockByNumber", ["latest", False])
+            hn, ht = int(head["number"], 16), int(head["timestamp"], 16)
+            est = hn - int((ht - int(claim_time)) / 0.1)
+            logs = rh._get_logs(self.rpc, max(0, est - 6000), min(hn, est + 6000),
                                 {"address": self.address,
                                  "topics": [T_CLAIMED, "0x" + _word(canvas_id)]})
             return logs[-1]["transactionHash"] if logs else None

@@ -182,9 +182,10 @@ class Painter:
         if not cid or cid <= self.canvas.id:
             return None
         rec = self.chain.frozen(self.canvas.id) or {}
-        tx = self.chain.claim_tx(self.canvas.id, rec.get("claimBlock") or 0)
+        tx = self.chain.claim_tx(self.canvas.id, rec.get("claimTime") or 0)
         claimed_id = self.canvas.id
-        new_id = self.freeze(claimed_id, rec.get("claimer"), tx, rec.get("claimBlock") or 0)
+        new_id = self.freeze(claimed_id, rec.get("claimer"), tx, rec.get("claimBlock") or 0,
+                             frozen_strokes=rec.get("strokes"))
         print(f"canvas {claimed_id} claimed by {rec.get('claimer')} "
               f"({rec.get('strokes')} strokes frozen); canvas {new_id} is blank", flush=True)
         return dict(canvasId=claimed_id, owner=rec.get("claimer"), tx=tx,
@@ -192,17 +193,27 @@ class Painter:
 
     # ---- a claimed canvas ---------------------------------------------------------
 
-    def freeze(self, canvas_id, owner, tx, block):
-        """Render and pin the canvas that was claimed, then start a blank one."""
-        strokes = self.log.read(0, 10_000_000)
+    def freeze(self, canvas_id, owner, tx, block, frozen_strokes=None):
+        """Render and pin the canvas that was claimed, then start a blank one.
+
+        The contract froze the LAST COMMIT, not the last stroke: the painter keeps drawing
+        between a commit and the moment it notices the claim, so the picture is cut at the
+        committed stroke count. The rolling root is prefix-consistent, so the root of those
+        first N strokes is exactly the one pinned on chain, and the PNG matches it.
+        """
+        n = int(frozen_strokes) if frozen_strokes else self.canvas.n
+        strokes = self.log.read(0, n)
+        root = C.root_of_strokes(strokes)
         img = C.render(strokes, self.canvas.w, self.canvas.h)
         img.save(DATA / f"canvas-{canvas_id:06d}.png")
-        C.write_manifest(DATA / f"canvas-{canvas_id:06d}.json", self.canvas,
+        frozen = C.Canvas(canvas_id, self.canvas.w, self.canvas.h, self.canvas.brush_px,
+                          state=dict(self.canvas.state(), n=n, root=root.hex()))
+        C.write_manifest(DATA / f"canvas-{canvas_id:06d}.json", frozen,
                          getattr(self, "input_hash", None), block,
                          extra=dict(owner=owner, tx=tx, claimed=True,
-                                    strokeRoot="0x" + self.canvas.root.hex()))
+                                    strokeRoot="0x" + root.hex(), drawnBeyondFreeze=self.canvas.n - n))
         self.recent.append(dict(canvasId=int(canvas_id), owner=owner, tx=tx,
-                                at=int(time.time()), strokes=self.canvas.n))
+                                at=int(time.time()), strokes=n))
         self.log.close()
         self.canvas = C.Canvas(canvas_id + 1, brush_px=BRUSH_PX)
         self.log = C.Log(DATA / "strokes", self.canvas.id)
@@ -210,6 +221,52 @@ class Painter:
         return self.canvas.id
 
     # ---- views --------------------------------------------------------------------
+
+    def repair_frozen(self):
+        """On boot, re-render any frozen canvas whose picture does not match what the
+        contract pinned. Canvas 1 was first rendered with the 60 strokes drawn after its
+        last commit; this cuts it back to the committed count, and would do the same for
+        any later one."""
+        if not self.chain.address:
+            return
+        for mpath in sorted(DATA.glob("canvas-*.json")):
+            try:
+                m = json.loads(mpath.read_text())
+                cid = int(m.get("canvas", {}).get("id") or 0)
+                if not m.get("claimed") or not cid:
+                    continue
+                rec = self.chain.frozen(cid)
+                if not rec:
+                    continue
+                if not m.get("tx"):                       # the claim's own transaction, if missing
+                    tx = self.chain.claim_tx(cid, rec.get("claimTime") or 0)
+                    if tx:
+                        m["tx"] = tx
+                        mpath.write_text(json.dumps(m, indent=1))
+                        for r in self.recent:
+                            if int(r.get("canvasId") or 0) == cid and not r.get("tx"):
+                                r["tx"] = tx
+                if int(m["canvas"].get("n") or 0) == int(rec["strokes"]):
+                    continue
+                strokes = C.Log(DATA / "strokes", cid).read(0, int(rec["strokes"]))
+                root = C.root_of_strokes(strokes)
+                if "0x" + root.hex() != rec["strokeRoot"].lower():
+                    print(f"canvas {cid}: log prefix root != pinned root, leaving it", flush=True)
+                    continue
+                C.render(strokes, int(m["canvas"]["w"]), int(m["canvas"]["h"])).save(
+                    DATA / f"canvas-{cid:06d}.png")
+                m["canvas"]["n"] = len(strokes)
+                m["canvas"]["root"] = root.hex()
+                m["strokeRoot"] = "0x" + root.hex()
+                m["repairedTo"] = len(strokes)
+                mpath.write_text(json.dumps(m, indent=1))
+                for r in self.recent:
+                    if int(r.get("canvasId") or 0) == cid:
+                        r["strokes"] = len(strokes)
+                print(f"canvas {cid}: re-rendered at the pinned {len(strokes)} strokes", flush=True)
+            except Exception as e:
+                print(f"repair of {mpath.name} failed: {type(e).__name__}: {str(e)[:120]}", flush=True)
+        self.save()
 
     def _claimed(self, r):
         """A claimed canvas as the site wants it: its own snapshot and its token id."""
@@ -283,6 +340,7 @@ async def start():
     P = Painter()
     print(f"brain {P.brain.n:,} neurons; groups {P.group_sizes}; "
           f"canvas {P.canvas.id} at {P.canvas.n} strokes", flush=True)
+    await asyncio.to_thread(P.repair_frozen)
     if os.environ.get("FLYO_AUTOSTART", "1") == "1":
         asyncio.create_task(loop())
 

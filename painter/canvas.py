@@ -176,6 +176,14 @@ class Log:
             pass
 
 
+def root_of_strokes(strokes):
+    """The rolling root of a stroke list, the same rule the canvas applies as it draws."""
+    root = ZERO_ROOT
+    for s in strokes:
+        root = hashlib.sha256(root + STROKE.pack(*s)).digest()
+    return root
+
+
 def root_of(path):
     """Recompute the root of a stroke file from scratch - the check anyone else can run."""
     root = ZERO_ROOT
