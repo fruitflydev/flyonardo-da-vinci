@@ -38,17 +38,29 @@ BRUSH_PX = 120.0          # ink a colour must lay down before the chain may chan
 EDGE = 6                  # keep the pen this far inside the paper
 STROKE_WIDTH = 2          # px; the site draws live strokes at the same weight
 
-STROKE = struct.Struct("<HHHHB")     # x0, y0, x1, y1, colour
+# Two stroke formats, fixed per canvas. A canvas never changes format part way: its root is a
+# rolling hash over these packed bytes, and the roots already committed on chain for the
+# canvases drawn before widths existed must stay reproducible.
+STROKE_V1 = struct.Struct("<HHHHB")      # x0, y0, x1, y1, colour
+STROKE_V2 = struct.Struct("<HHHHBB")     # x0, y0, x1, y1, colour, width in px
+FORMATS = {1: STROKE_V1, 2: STROKE_V2}
+FORMAT_TEXT = {1: "<HHHHB x0 y0 x1 y1 colour", 2: "<HHHHBB x0 y0 x1 y1 colour width"}
+CURRENT_FMT = 2
+STROKE = STROKE_V1                       # the original name, kept for old callers
+WIDTH_MIN, WIDTH_MAX = 1, 6
 ZERO_ROOT = bytes(32)
 
 
 class Canvas:
     """One canvas: the fly's position, the line so far, and the rolling root."""
 
-    def __init__(self, canvas_id, w=W, h=H, brush_px=BRUSH_PX, state=None):
+    def __init__(self, canvas_id, w=W, h=H, brush_px=BRUSH_PX, state=None, fmt=None):
         self.id = int(canvas_id)
         self.w, self.h = int(w), int(h)
         self.brush_px = float(brush_px)
+        # a canvas restored from state keeps the format it was started in (1 if it predates
+        # formats); a canvas started now gets the current one
+        self.fmt = int(state.get("fmt", 1)) if state else int(fmt or CURRENT_FMT)
         if state:
             self.x, self.y = float(state["x"]), float(state["y"])
             self.heading = float(state.get("heading", 0.0))
@@ -72,7 +84,7 @@ class Canvas:
 
     # ---- drawing ------------------------------------------------------------------
 
-    def step(self, turn_deg, speed_px):
+    def step(self, turn_deg, speed_px, width=STROKE_WIDTH):
         """
         Turn the fly by `turn_deg`, walk it `speed_px` along its new heading, and return
         the stroke it left, or None if it did not move.
@@ -113,7 +125,9 @@ class Canvas:
         self.distance += seg
         self.n += 1
         stroke = (int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)), self.colour)
-        self.root = hashlib.sha256(self.root + STROKE.pack(*stroke)).digest()
+        if self.fmt >= 2:
+            stroke += (int(min(max(round(width), WIDTH_MIN), WIDTH_MAX)),)
+        self.root = hashlib.sha256(self.root + FORMATS[self.fmt].pack(*stroke)).digest()
         return stroke
 
     def maybe_change_brush(self, block_number, block_hash):
@@ -136,7 +150,7 @@ class Canvas:
     # ---- persistence --------------------------------------------------------------
 
     def state(self):
-        return dict(id=self.id, x=self.x, y=self.y, heading=self.heading,
+        return dict(id=self.id, fmt=self.fmt, x=self.x, y=self.y, heading=self.heading,
                     colour=self.colour, ink=self.ink,
                     n=self.n, root=self.root.hex(), brush_changes=self.brush_changes,
                     last_brush_block=self.last_brush_block, distance=self.distance,
@@ -144,30 +158,32 @@ class Canvas:
 
 
 class Log:
-    """Append-only stroke log on disk, one canvas per file, packed 9 bytes a stroke."""
+    """Append-only stroke log on disk, one canvas per file, packed in that canvas's format
+    (9 bytes a stroke in format 1, 10 in format 2)."""
 
-    def __init__(self, dir_path, canvas_id):
+    def __init__(self, dir_path, canvas_id, fmt=1):
         self.dir = Path(dir_path)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.path = self.dir / f"canvas-{int(canvas_id):06d}.strokes"
+        self.struct = FORMATS[int(fmt)]
         self.f = open(self.path, "ab")
 
     def append(self, strokes):
         if not strokes:
             return
-        self.f.write(b"".join(STROKE.pack(*s) for s in strokes))
+        self.f.write(b"".join(self.struct.pack(*s) for s in strokes))
         self.f.flush()
 
     def read(self, start=0, limit=20000):
         """Strokes [start, start+limit) as plain lists, for the site to draw."""
-        size = STROKE.size
+        size = self.struct.size
         with open(self.path, "rb") as f:
             f.seek(int(start) * size)
             buf = f.read(int(limit) * size)
-        return [list(STROKE.unpack_from(buf, i)) for i in range(0, len(buf) - size + 1, size)]
+        return [list(self.struct.unpack_from(buf, i)) for i in range(0, len(buf) - size + 1, size)]
 
     def count(self):
-        return self.path.stat().st_size // STROKE.size if self.path.exists() else 0
+        return self.path.stat().st_size // self.struct.size if self.path.exists() else 0
 
     def close(self):
         try:
@@ -176,18 +192,19 @@ class Log:
             pass
 
 
-def root_of_strokes(strokes):
+def root_of_strokes(strokes, fmt=1):
     """The rolling root of a stroke list, the same rule the canvas applies as it draws."""
+    st = FORMATS[int(fmt)]
     root = ZERO_ROOT
     for s in strokes:
-        root = hashlib.sha256(root + STROKE.pack(*s)).digest()
+        root = hashlib.sha256(root + st.pack(*s)).digest()
     return root
 
 
-def root_of(path):
+def root_of(path, fmt=1):
     """Recompute the root of a stroke file from scratch - the check anyone else can run."""
     root = ZERO_ROOT
-    size = STROKE.size
+    size = FORMATS[int(fmt)].size
     with open(path, "rb") as f:
         while True:
             b = f.read(size * 4096)
@@ -199,21 +216,28 @@ def root_of(path):
 
 
 def render(strokes, w=W, h=H, scale=1.0, width=STROKE_WIDTH):
-    """PNG of a stroke list. Pillow only; the site draws the live line itself."""
+    """PNG of a stroke list. A format-2 stroke carries its own width; a format-1 stroke is
+    drawn at `width`. Ends are rounded, because a heavy line with butt ends leaves a notch at
+    every turn."""
     from PIL import Image, ImageDraw
     img = Image.new("RGB", (int(w * scale), int(h * scale)), PAPER)
     d = ImageDraw.Draw(img)
-    lw = max(1, int(round(width * scale)))
-    for x0, y0, x1, y1, c in strokes:
-        d.line([(x0 * scale, y0 * scale), (x1 * scale, y1 * scale)],
-               fill=PALETTE[int(c) % len(PALETTE)], width=lw)
+    for s in strokes:
+        x0, y0, x1, y1, c = s[:5]
+        lw = max(1, int(round((s[5] if len(s) > 5 else width) * scale)))
+        col = PALETTE[int(c) % len(PALETTE)]
+        d.line([(x0 * scale, y0 * scale), (x1 * scale, y1 * scale)], fill=col, width=lw)
+        if lw >= 3:
+            r = lw / 2.0
+            for px, py in ((x0 * scale, y0 * scale), (x1 * scale, y1 * scale)):
+                d.ellipse([px - r, py - r, px + r, py + r], fill=col)
     return img
 
 
 def write_manifest(path, canvas, inputs_hash, block, extra=None):
     """What a claimed canvas is: its root, the inputs that made it, and how to redraw it."""
     m = dict(canvas=canvas.state(), inputHash=inputs_hash, block=int(block),
-             palette=list(PALETTE), paper=PAPER, strokeFormat="<HHHHB x0 y0 x1 y1 colour",
+             palette=list(PALETTE), paper=PAPER, strokeFormat=FORMAT_TEXT[canvas.fmt],
              rootRule="sha256(previous root || packed stroke), from 32 zero bytes")
     m.update(extra or {})
     Path(path).write_text(json.dumps(m, indent=1))

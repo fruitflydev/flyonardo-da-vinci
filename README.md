@@ -81,6 +81,22 @@ brush several times between strokes and no colour would ever be visible. Instead
 Band length therefore reads the fly's speed, while the colour and the moment are the
 chain's.
 
+### Line weight
+
+Each stroke is 1 to 6 px wide, and the width is **how much of the whole brain fired on that
+step**, ranked against the last 240 steps. The pen's direction and speed come from the
+descending neurons; line weight is deliberately a different reading, so it says something
+the path does not: a stroke is heavy when far more of the brain was awake than it has been
+lately, and a hairline when it was nearly silent. It is a rank rather than a fixed scale for
+the same reason the chain channels are gated against their own history — a fixed scale sits
+at one end on a loud day and the other on a quiet one.
+
+The width is part of the packed stroke, so it is part of the root: the line weight is pinned
+on chain along with the path. Because a root is a rolling hash, a canvas cannot change
+format half way, so formats are fixed per canvas — canvases started before widths existed
+are format 1 (`<HHHHB`, every stroke drawn at 2 px), and every canvas after is format 2
+(`<HHHHBB`, the last byte is the width). A canvas's manifest says which it is.
+
 ## Channels
 
 Each chain signal drives one sensory group. The pairing is not arbitrary: every group was

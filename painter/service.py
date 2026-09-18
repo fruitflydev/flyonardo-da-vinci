@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,7 @@ ORIGINS = [o.strip() for o in (os.environ.get("CORS_ORIGINS") or
                                "https://flybrain.online,https://www.flybrain.online").split(",") if o.strip()]
 
 STATE_PATH = DATA / "painter.json"
+WIDTH_HISTORY = 240          # steps of whole-brain activity a line weight is ranked against
 VERSION = "0.1.0"
 
 
@@ -93,7 +95,10 @@ class Painter:
         self.motor.load(s.get("motor"))
         self.last_commit = s.get("last_commit")
         self.recent = s.get("recent", [])
-        self.log = C.Log(DATA / "strokes", self.canvas.id)
+        # how much of the whole brain was awake on each recent step: what line weight is read from
+        self.active_hist = deque(s.get("active_hist") or [], maxlen=WIDTH_HISTORY)
+        self.last_width, self.last_active = C.STROKE_WIDTH, 0
+        self.log = C.Log(DATA / "strokes", self.canvas.id, self.canvas.fmt)
         on_disk = self.log.count()
         if on_disk != self.canvas.n:
             # the log is the truth; a torn shutdown can leave the summary behind it
@@ -105,7 +110,8 @@ class Painter:
     def save(self):
         STATE_PATH.write_text(json.dumps(dict(
             canvas=self.canvas.state(), gates=self.gates.dump(), motor=self.motor.state(),
-            last_commit=self.last_commit, recent=self.recent[-24:]), indent=1))
+            last_commit=self.last_commit, recent=self.recent[-24:],
+            active_hist=list(self.active_hist)), indent=1))
 
     # ---- one window ---------------------------------------------------------------
 
@@ -131,7 +137,7 @@ class Painter:
                                state=self.bstate)
             self.bstate = r["_state"]
             turn, speed, self.detail = self.motor.readout(r)
-            s = self.canvas.step(turn, speed)
+            s = self.canvas.step(turn, speed, self.line_width(r))
             if s:
                 strokes.append(s)
             # pair stroke i with a block from this window: the strokes span the window, so
@@ -191,6 +197,27 @@ class Painter:
         return dict(canvasId=claimed_id, owner=rec.get("claimer"), tx=tx,
                     frozen=rec, next=new_id)
 
+    def line_width(self, r):
+        """
+        Line weight: how much of the WHOLE brain fired on this step, ranked against the last
+        WIDTH_HISTORY steps. The direction and the speed of the pen come from the descending
+        neurons; this is deliberately a different reading, so the weight of the line says
+        something the path does not - a stroke is heavy when far more of the brain was awake
+        than it has been lately, and a hairline when it was nearly silent.
+
+        It is a rank and not a fixed scale for the same reason the chain channels are gated
+        against their own history: a fixed scale would sit at one end on a loud day and the
+        other on a quiet one. CHOSEN, like the pixel scale of the pen.
+        """
+        fired = r.get("_fired")
+        active = int(len(fired)) if fired is not None else 0
+        hist = self.active_hist
+        rank = (sum(1 for h in hist if h <= active) / len(hist)) if hist else 0.5
+        hist.append(active)
+        self.last_active = active
+        self.last_width = int(round(C.WIDTH_MIN + (C.WIDTH_MAX - C.WIDTH_MIN) * rank))
+        return self.last_width
+
     # ---- a claimed canvas ---------------------------------------------------------
 
     def freeze(self, canvas_id, owner, tx, block, frozen_strokes=None):
@@ -203,7 +230,7 @@ class Painter:
         """
         n = int(frozen_strokes) if frozen_strokes else self.canvas.n
         strokes = self.log.read(0, n)
-        root = C.root_of_strokes(strokes)
+        root = C.root_of_strokes(strokes, self.canvas.fmt)
         img = C.render(strokes, self.canvas.w, self.canvas.h)
         img.save(DATA / f"canvas-{canvas_id:06d}.png")
         frozen = C.Canvas(canvas_id, self.canvas.w, self.canvas.h, self.canvas.brush_px,
@@ -215,8 +242,8 @@ class Painter:
         self.recent.append(dict(canvasId=int(canvas_id), owner=owner, tx=tx,
                                 at=int(time.time()), strokes=n))
         self.log.close()
-        self.canvas = C.Canvas(canvas_id + 1, brush_px=BRUSH_PX)
-        self.log = C.Log(DATA / "strokes", self.canvas.id)
+        self.canvas = C.Canvas(canvas_id + 1, brush_px=BRUSH_PX, fmt=C.CURRENT_FMT)
+        self.log = C.Log(DATA / "strokes", self.canvas.id, self.canvas.fmt)
         self.save()
         return self.canvas.id
 
@@ -248,8 +275,9 @@ class Painter:
                                 r["tx"] = tx
                 if int(m["canvas"].get("n") or 0) == int(rec["strokes"]):
                     continue
-                strokes = C.Log(DATA / "strokes", cid).read(0, int(rec["strokes"]))
-                root = C.root_of_strokes(strokes)
+                fmt = int(m["canvas"].get("fmt", 1))
+                strokes = C.Log(DATA / "strokes", cid, fmt).read(0, int(rec["strokes"]))
+                root = C.root_of_strokes(strokes, fmt)
                 if "0x" + root.hex() != rec["strokeRoot"].lower():
                     print(f"canvas {cid}: log prefix root != pinned root, leaving it", flush=True)
                     continue
@@ -286,6 +314,12 @@ class Painter:
             motor=getattr(self, "detail", None),
             colour=self.canvas.colour, palette=list(C.PALETTE), paper=C.PAPER,
             strokeWidth=C.STROKE_WIDTH,
+            strokeFormat=self.canvas.fmt, strokeFormatText=C.FORMAT_TEXT[self.canvas.fmt],
+            widthRange=[C.WIDTH_MIN, C.WIDTH_MAX], lastWidth=self.last_width,
+            brainActive=self.last_active,
+            widthRule=("whole-brain neurons that fired this step, ranked against the last "
+                       f"{WIDTH_HISTORY} steps" if self.canvas.fmt >= 2 else
+                       "this canvas predates stroke widths; every stroke is drawn at strokeWidth"),
             brushChanges=self.canvas.brush_changes, brushPx=self.canvas.brush_px,
             inkSinceBrush=round(self.canvas.ink, 1), lineLength=round(self.canvas.distance, 1),
             strokeRoot="0x" + self.canvas.root.hex(),
